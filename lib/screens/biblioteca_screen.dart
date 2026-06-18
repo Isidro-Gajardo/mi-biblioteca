@@ -76,7 +76,7 @@ class _BibliotecaScreenState extends State<BibliotecaScreen> {
       context: context,
       barrierDismissible: false,
       builder: (ctx) => WillPopScope(
-        onWillPop: () async => false, // bloquear botón atrás
+        onWillPop: () async => false,
         child: StatefulBuilder(
           builder: (ctx, setDialogState) {
             _setDialogState = setDialogState;
@@ -165,7 +165,6 @@ class _BibliotecaScreenState extends State<BibliotecaScreen> {
 
     setState(() => _subiendo = true);
 
-    // Dialogo de análisis inicial
     if (mounted) {
       showDialog(
         context: context,
@@ -192,12 +191,18 @@ class _BibliotecaScreenState extends State<BibliotecaScreen> {
       final ruta = archivo.path!;
       final totalPaginas = await _pdfService.obtenerTotalPaginas(ruta);
       final tieneTexto = await _pdfService.tieneTextoExtraible(ruta);
-      final titulo = archivo.name.replaceAll('.pdf', '');
+      final titulo = archivo.name
+          .replaceAll('.pdf', '')
+          .replaceAll('_', ' ')
+          .replaceAll('-', ' ')
+          .trim()
+          .split(' ')
+          .where((p) => p.isNotEmpty)
+          .map((p) => p[0].toUpperCase() + p.substring(1))
+          .join(' ');
 
-      // Cerrar dialogo de analisis
       if (mounted) Navigator.pop(context);
 
-      // Si es escaneado se pregunta si quiere OCR
       bool usarOCR = false;
       if (!tieneTexto && mounted) {
         usarOCR =
@@ -237,8 +242,6 @@ class _BibliotecaScreenState extends State<BibliotecaScreen> {
             ) ??
             false;
       }
-
-      // Mostrar dialogo de progreso segun tipo
       if (usarOCR) {
         int paginaOCR = 0;
         StateSetter? _setDialogState;
@@ -339,10 +342,27 @@ class _BibliotecaScreenState extends State<BibliotecaScreen> {
       _cargarLibros();
     } catch (e) {
       if (mounted) {
-        Navigator.pop(context);
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error al importar: $e')));
+        try {
+          Navigator.pop(context);
+        } catch (_) {}
+
+        String mensajeError = 'Error al importar el PDF';
+
+        if (e.toString().contains('password') ||
+            e.toString().contains('encrypted')) {
+          mensajeError = 'Este PDF está protegido con contraseña';
+        } else if (e.toString().contains('corrupt') ||
+            e.toString().contains('invalid')) {
+          mensajeError = 'El PDF parece estar dañado o no es válido';
+        }
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(mensajeError),
+            backgroundColor: Colors.redAccent,
+            duration: const Duration(seconds: 3),
+          ),
+        );
       }
     }
 
@@ -489,10 +509,7 @@ class _BibliotecaScreenState extends State<BibliotecaScreen> {
                 ],
               ),
             ),
-
             const SizedBox(height: 20),
-
-            // Buscador y forma de ordenar
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 24),
               child: Row(
@@ -552,10 +569,7 @@ class _BibliotecaScreenState extends State<BibliotecaScreen> {
                 ],
               ),
             ),
-
             const SizedBox(height: 20),
-
-            // Grid de libros
             Expanded(
               child: _librosFiltrados.isEmpty
                   ? Center(

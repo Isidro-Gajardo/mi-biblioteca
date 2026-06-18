@@ -16,6 +16,36 @@ class PdfService {
     return total;
   }
 
+  Future<String?> guardarThumbnail(String rutaArchivo, String libroId) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final carpetaThumbnails = Directory('${dir.path}/thumbnails');
+      await carpetaThumbnails.create(recursive: true);
+
+      final rutaThumbnail = '${carpetaThumbnails.path}/$libroId.jpg';
+
+      if (await File(rutaThumbnail).exists()) {
+        return rutaThumbnail;
+      }
+
+      final imagen = await renderizarPagina(rutaArchivo, 1, escala: 0.4);
+      if (imagen == null) return null;
+
+      await File(rutaThumbnail).writeAsBytes(imagen.bytes);
+      return rutaThumbnail;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  Future<void> eliminarThumbnail(String libroId) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final archivo = File('${dir.path}/thumbnails/$libroId.jpg');
+      if (await archivo.exists()) await archivo.delete();
+    } catch (_) {}
+  }
+
   Future<List<String>> extraerTextoOCR(
     String rutaArchivo, {
     void Function(int pagina, int total)? onProgreso,
@@ -102,7 +132,7 @@ class PdfService {
         endPageIndex: pagina,
       );
       doc.dispose();
-      return texto;
+      return _limpiarTexto(texto);
     } catch (e) {
       return '';
     }
@@ -117,7 +147,7 @@ class PdfService {
 
       for (int i = 0; i < doc.pages.count; i++) {
         final texto = extractor.extractText(startPageIndex: i, endPageIndex: i);
-        paginas.add(texto.trim());
+        paginas.add(_limpiarTexto(texto.trim()));
       }
 
       doc.dispose();
@@ -125,6 +155,30 @@ class PdfService {
     } catch (e) {
       return [];
     }
+  }
+
+  String _limpiarTexto(String texto) {
+    for (int i = 0; i < texto.length && i < 200; i++) {
+      final code = texto.codeUnitAt(i);
+      if (code == 32) continue;
+      if (texto[i] == '\n') continue;
+      if (code > 127 || code < 32) {
+        print(
+          'Char especial en pos $i: U+${code.toRadixString(16).padLeft(4, '0')} = "${texto[i]}"',
+        );
+      }
+    }
+    return texto
+        .replaceAll(
+          RegExp(r'[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]'),
+          ' ',
+        )
+        .replaceAll(RegExp(r' {2,}'), ' ')
+        .replaceAllMapped(RegExp(r' ([,\.\!\?\;\:])'), (m) => m.group(1)!)
+        .split('\n')
+        .map((linea) => linea.trim())
+        .join('\n')
+        .replaceAll(RegExp(r'\n{3,}'), '\n\n');
   }
 
   Future<pdfx.PdfPageImage?> renderizarPagina(

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:pdfx/pdfx.dart';
 import '../models/libro.dart';
@@ -7,6 +8,106 @@ import '../models/subrayado.dart';
 import '../services/storage_service.dart';
 import '../theme/app_theme.dart';
 import 'busqueda_screen.dart';
+
+List<Map<String, dynamic>> _reconstruirParrafosIsolate(String texto) {
+  String textoLimpio = texto
+      .replaceAll(RegExp(r'[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]'), ' ')
+      .replaceAll(RegExp(r'[ \t]+'), ' ')
+      .replaceAll(RegExp(r'- \n'), '')
+      .replaceAll(RegExp(r'-\n'), '')
+      .replaceAllMapped(RegExp(r',\n'), (m) => ', ')
+      .replaceAllMapped(RegExp(r';\n'), (m) => '; ')
+      .replaceAllMapped(RegExp(r':\n'), (m) => ': ');
+
+  final lineas = textoLimpio.split('\n').map((l) => l.trim()).toList();
+  final bloques = <Map<String, dynamic>>[];
+  final buffer = StringBuffer();
+
+  for (int i = 0; i < lineas.length; i++) {
+    final linea = lineas[i];
+
+    if (linea.isEmpty) {
+      if (buffer.isNotEmpty) {
+        bloques.add({'tipo': 'parrafo', 'texto': buffer.toString().trim()});
+        buffer.clear();
+      }
+      continue;
+    }
+
+    final esMayusculas =
+        linea == linea.toUpperCase() &&
+        linea.length > 3 &&
+        linea.length < 80 &&
+        RegExp(r'[A-ZÁÉÍÓÚÑ]').hasMatch(linea);
+    final esCapitulo = RegExp(
+      r'^(Cap[íi]tulo|CAPÍTULO|Chapter|CHAPTER|Parte|PARTE|\d+\.)\s',
+    ).hasMatch(linea);
+    final esTituloAislado =
+        linea.length < 40 &&
+        !linea.endsWith('.') &&
+        !linea.endsWith(',') &&
+        !linea.endsWith(';') &&
+        !linea.endsWith(':') &&
+        !linea.contains(',') &&
+        i < lineas.length - 1 &&
+        (i == 0 || lineas[i - 1].isEmpty) &&
+        lineas[i + 1].isEmpty;
+
+    if (esMayusculas || esCapitulo || esTituloAislado) {
+      if (buffer.isNotEmpty) {
+        bloques.add({'tipo': 'parrafo', 'texto': buffer.toString().trim()});
+        buffer.clear();
+      }
+      bloques.add({'tipo': 'titulo', 'texto': linea});
+      continue;
+    }
+
+    if (buffer.isNotEmpty) {
+      final bufferStr = buffer.toString();
+      if (bufferStr.endsWith('-')) {
+        buffer.clear();
+        buffer.write(bufferStr.substring(0, bufferStr.length - 1) + linea);
+      } else {
+        buffer.write(' $linea');
+      }
+    } else {
+      buffer.write(linea);
+    }
+
+    if (linea.endsWith('.') ||
+        linea.endsWith('!') ||
+        linea.endsWith('?') ||
+        linea.endsWith('."') ||
+        linea.endsWith('!"') ||
+        linea.endsWith('?"')) {
+      final siguiente = i < lineas.length - 1 ? lineas[i + 1].trim() : '';
+      if (siguiente.isEmpty ||
+          (siguiente.isNotEmpty &&
+              siguiente[0] == siguiente[0].toUpperCase() &&
+              siguiente.length > 3)) {
+        bloques.add({'tipo': 'parrafo', 'texto': buffer.toString().trim()});
+        buffer.clear();
+      }
+    }
+  }
+
+  if (buffer.isNotEmpty) {
+    bloques.add({'tipo': 'parrafo', 'texto': buffer.toString().trim()});
+  }
+
+  return bloques;
+}
+
+class _Segmento {
+  final int inicio;
+  final int fin;
+  final List<String> colores;
+  const _Segmento({
+    required this.inicio,
+    required this.fin,
+    required this.colores,
+  });
+}
 
 class LectorScreen extends StatefulWidget {
   final Libro libro;
@@ -22,6 +123,8 @@ class _LectorScreenState extends State<LectorScreen>
 
   late PdfController _pdfController;
   final PageController _pageController = PageController();
+  final Map<int, List<Map<String, dynamic>>> _cacheParrafos = {};
+
   bool _barrasVisibles = true;
   bool _modoLectura = false;
   int _paginaActual = 1;
@@ -32,6 +135,7 @@ class _LectorScreenState extends State<LectorScreen>
   double _tamanoFuente = 16;
   double _espaciado = 1.7;
   String _temaActual = 'claro';
+  String _alineacion = 'justificado';
 
   List<Subrayado> _subrayados = [];
   bool _panelSubrayadosVisible = false;
@@ -42,6 +146,9 @@ class _LectorScreenState extends State<LectorScreen>
     'rojo': Color(0xFFFCA5A5),
     'azul': Color(0xFF93C5FD),
   };
+
+  TextAlign get _textAlign =>
+      _alineacion == 'justificado' ? TextAlign.justify : TextAlign.left;
 
   @override
   void initState() {
@@ -64,12 +171,38 @@ class _LectorScreenState extends State<LectorScreen>
     _overlaySubrayar?.remove();
     _pdfController.dispose();
     _pageController.dispose();
+    _cacheParrafos.clear();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     _storage.guardarProgreso(widget.libro.id, _paginaActual);
     super.dispose();
   }
 
   void _cargarSubrayados() {
+    setState(() {
+      _subrayados = _storage.obtenerSubrayados(widget.libro.id);
+    });
+  }
+
+  Future<void> _agregarSubrayado(String texto) async {
+    if (texto.trim().isEmpty) return;
+    await _storage.agregarSubrayado(
+      libroId: widget.libro.id,
+      pagina: _paginaActual,
+      texto: texto.trim(),
+    );
+    setState(() {
+      _subrayados = _storage.obtenerSubrayados(widget.libro.id);
+    });
+  }
+
+  Future<void> _agregarSubrayadoConColor(String texto, String color) async {
+    if (texto.trim().isEmpty) return;
+    await _storage.agregarSubrayado(
+      libroId: widget.libro.id,
+      pagina: _paginaActual,
+      texto: texto.trim(),
+      color: color,
+    );
     setState(() {
       _subrayados = _storage.obtenerSubrayados(widget.libro.id);
     });
@@ -101,25 +234,12 @@ class _LectorScreenState extends State<LectorScreen>
     }
   }
 
-  Future<void> _agregarSubrayado(String texto) async {
-    if (texto.trim().isEmpty) return;
-    await _storage.agregarSubrayado(
-      libroId: widget.libro.id,
-      pagina: _paginaActual,
-      texto: texto.trim(),
-    );
-    _cargarSubrayados();
-  }
-
-  Future<void> _agregarSubrayadoConColor(String texto, String color) async {
-    if (texto.trim().isEmpty) return;
-    await _storage.agregarSubrayado(
-      libroId: widget.libro.id,
-      pagina: _paginaActual,
-      texto: texto.trim(),
-      color: color,
-    );
-    _cargarSubrayados();
+  Future<List<Map<String, dynamic>>> _obtenerParrafos(int index) async {
+    if (_cacheParrafos.containsKey(index)) return _cacheParrafos[index]!;
+    final texto = widget.libro.textoPaginas[index];
+    final bloques = await compute(_reconstruirParrafosIsolate, texto);
+    _cacheParrafos[index] = bloques;
+    return bloques;
   }
 
   void _mostrarBotonSubrayar() {
@@ -168,7 +288,7 @@ class _LectorScreenState extends State<LectorScreen>
       ),
     );
     Overlay.of(context).insert(_overlaySubrayar!);
-    Future.delayed(const Duration(seconds: 5), () {
+    Future.delayed(const Duration(seconds: 8), () {
       _overlaySubrayar?.remove();
       _overlaySubrayar = null;
     });
@@ -307,6 +427,32 @@ class _LectorScreenState extends State<LectorScreen>
                   _botonTema('sepia', 'Sepia', setModalState),
                 ],
               ),
+              const SizedBox(height: 16),
+              Text(
+                'Alineación del texto',
+                style: GoogleFonts.inter(
+                  color: AppTheme.textoGris,
+                  fontSize: 13,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  _botonAlineacion(
+                    'justificado',
+                    'Justificado',
+                    Icons.format_align_justify,
+                    setModalState,
+                  ),
+                  const SizedBox(width: 12),
+                  _botonAlineacion(
+                    'izquierda',
+                    'Izquierda',
+                    Icons.format_align_left,
+                    setModalState,
+                  ),
+                ],
+              ),
               const SizedBox(height: 20),
             ],
           ),
@@ -345,8 +491,55 @@ class _LectorScreenState extends State<LectorScreen>
     );
   }
 
-  void _mostrarPanelSubrayados() {
-    setState(() => _panelSubrayadosVisible = !_panelSubrayadosVisible);
+  Widget _botonAlineacion(
+    String valor,
+    String etiqueta,
+    IconData icono,
+    StateSetter setModalState,
+  ) {
+    final seleccionado = _alineacion == valor;
+    return GestureDetector(
+      onTap: () {
+        setModalState(() => _alineacion = valor);
+        setState(() {});
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        decoration: BoxDecoration(
+          color: seleccionado
+              ? AppTheme.azulPrimario.withOpacity(0.15)
+              : AppTheme.fondoOscuro,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: seleccionado
+                ? AppTheme.azulPrimario
+                : AppTheme.textoGris.withOpacity(0.3),
+            width: 1.5,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              icono,
+              size: 16,
+              color: seleccionado ? AppTheme.azulPrimario : AppTheme.textoGris,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              etiqueta,
+              style: GoogleFonts.inter(
+                color: seleccionado
+                    ? AppTheme.azulPrimario
+                    : AppTheme.textoGris,
+                fontSize: 13,
+                fontWeight: seleccionado ? FontWeight.w600 : FontWeight.normal,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   void _mostrarDialogoSubrayado() {
@@ -509,7 +702,6 @@ class _LectorScreenState extends State<LectorScreen>
               icon: Icon(Icons.text_fields, color: tema['texto'], size: 22),
               onPressed: _mostrarConfiguracion,
             ),
-          // Búsqueda
           IconButton(
             icon: Icon(
               Icons.search,
@@ -541,7 +733,6 @@ class _LectorScreenState extends State<LectorScreen>
               }
             },
           ),
-          // Subrayados
           IconButton(
             icon: Stack(
               clipBehavior: Clip.none,
@@ -576,7 +767,9 @@ class _LectorScreenState extends State<LectorScreen>
                   ),
               ],
             ),
-            onPressed: _mostrarPanelSubrayados,
+            onPressed: () => setState(
+              () => _panelSubrayadosVisible = !_panelSubrayadosVisible,
+            ),
           ),
         ],
       ),
@@ -682,147 +875,93 @@ class _LectorScreenState extends State<LectorScreen>
       },
       itemCount: paginas.length,
       itemBuilder: (_, index) {
-        final texto = paginas[index];
-        final bloques = _reconstruirParrafos(texto);
-        final subrayadosPagina = _subrayados
-            .where((s) => s.pagina == index + 1)
-            .toList();
-
-        return Container(
-          color: tema['fondo'],
-          child: ListView.builder(
-            padding: const EdgeInsets.fromLTRB(28, 24, 28, 32),
-            itemCount: bloques.length,
-            itemBuilder: (_, i) {
-              final bloque = bloques[i];
-              final esTitulo = bloque['tipo'] == 'titulo';
-              final linea = bloque['texto'] as String;
-
-              final subrayadosEnLinea = subrayadosPagina
-                  .where(
-                    (s) => linea.contains(s.texto) || s.texto.contains(linea),
-                  )
-                  .toList();
-
-              if (esTitulo) {
-                return Padding(
-                  padding: const EdgeInsets.only(top: 32, bottom: 16),
-                  child: Text(
-                    linea,
-                    textAlign: TextAlign.center,
-                    style: GoogleFonts.merriweather(
-                      color: tema['texto'],
-                      fontSize: _tamanoFuente + 3,
-                      fontWeight: FontWeight.bold,
-                      height: 1.4,
-                      letterSpacing: 0.5,
-                    ),
+        return FutureBuilder<List<Map<String, dynamic>>>(
+          key: ValueKey(index),
+          future: _obtenerParrafos(index),
+          builder: (ctx, snapshot) {
+            if (!snapshot.hasData) {
+              return Container(
+                color: tema['fondo'],
+                child: const Center(
+                  child: CircularProgressIndicator(
+                    color: AppTheme.azulPrimario,
+                    strokeWidth: 2,
                   ),
-                );
-              }
+                ),
+              );
+            }
 
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 18),
-                child: subrayadosEnLinea.isNotEmpty
-                    ? _parrafoConSubrayado(linea, subrayadosEnLinea, tema)
-                    : SelectableText(
+            final bloques = snapshot.data!;
+            final subrayadosPagina = _subrayados
+                .where((s) => s.pagina == index + 1)
+                .toList();
+
+            return Container(
+              color: tema['fondo'],
+              child: ListView.builder(
+                padding: const EdgeInsets.fromLTRB(28, 24, 28, 32),
+                itemCount: bloques.length,
+                itemBuilder: (_, i) {
+                  final bloque = bloques[i];
+                  final esTitulo = bloque['tipo'] == 'titulo';
+                  final linea = bloque['texto'] as String;
+                  final subrayadosEnLinea = subrayadosPagina
+                      .where(
+                        (s) => s.texto.length > 6 && linea.contains(s.texto),
+                      )
+                      .toList();
+
+                  if (esTitulo) {
+                    return Padding(
+                      padding: const EdgeInsets.only(top: 32, bottom: 16),
+                      child: Text(
                         linea,
-                        textAlign: TextAlign.justify,
+                        textAlign: TextAlign.center,
                         style: GoogleFonts.merriweather(
                           color: tema['texto'],
-                          fontSize: _tamanoFuente,
-                          height: _espaciado,
+                          fontSize: _tamanoFuente + 3,
+                          fontWeight: FontWeight.bold,
+                          height: 1.4,
+                          letterSpacing: 0.5,
                         ),
-                        onSelectionChanged: (selection, cause) {
-                          if (selection.baseOffset != selection.extentOffset) {
-                            final seleccionado = linea.substring(
-                              selection.baseOffset.clamp(0, linea.length),
-                              selection.extentOffset.clamp(0, linea.length),
-                            );
-                            if (seleccionado.trim().length > 3) {
-                              _textoSeleccionado = seleccionado;
-                              _mostrarBotonSubrayar();
-                            }
-                          }
-                        },
                       ),
-              );
-            },
-          ),
+                    );
+                  }
+
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 18),
+                    child: subrayadosEnLinea.isNotEmpty
+                        ? _parrafoConSubrayado(linea, subrayadosEnLinea, tema)
+                        : SelectableText(
+                            linea,
+                            textAlign: _textAlign,
+                            style: GoogleFonts.merriweather(
+                              color: tema['texto'],
+                              fontSize: _tamanoFuente,
+                              height: _espaciado,
+                            ),
+                            onSelectionChanged: (selection, cause) {
+                              if (selection.baseOffset !=
+                                  selection.extentOffset) {
+                                final seleccionado = linea.substring(
+                                  selection.baseOffset.clamp(0, linea.length),
+                                  selection.extentOffset.clamp(0, linea.length),
+                                );
+                                if (seleccionado.trim().length > 6) {
+                                  _textoSeleccionado = seleccionado;
+                                  _mostrarBotonSubrayar();
+                                }
+                              }
+                            },
+                          ),
+                  );
+                },
+              ),
+            );
+          },
         );
       },
     );
-  }
-
-  List<Map<String, dynamic>> _reconstruirParrafos(String texto) {
-    final lineas = texto.split('\n').map((l) => l.trim()).toList();
-    final bloques = <Map<String, dynamic>>[];
-    final buffer = StringBuffer();
-
-    for (int i = 0; i < lineas.length; i++) {
-      final linea = lineas[i];
-
-      if (linea.isEmpty) {
-        if (buffer.isNotEmpty) {
-          bloques.add({'tipo': 'parrafo', 'texto': buffer.toString().trim()});
-          buffer.clear();
-        }
-        continue;
-      }
-
-      final esMayusculas =
-          linea == linea.toUpperCase() && linea.length > 3 && linea.length < 80;
-      final esCapitulo = RegExp(
-        r'^(Cap[íi]tulo|CAPÍTULO|Chapter|CHAPTER|Parte|PARTE|\d+\.)\s',
-      ).hasMatch(linea);
-      final esTituloAislado =
-          linea.length < 40 &&
-          !linea.endsWith('.') &&
-          !linea.endsWith(',') &&
-          !linea.endsWith(';') &&
-          !linea.endsWith(':') &&
-          !linea.contains(',') &&
-          i < lineas.length - 1 &&
-          lineas[i > 0 ? i - 1 : 0].isEmpty &&
-          lineas[i + 1].isEmpty;
-
-      if (esMayusculas || esCapitulo || esTituloAislado) {
-        if (buffer.isNotEmpty) {
-          bloques.add({'tipo': 'parrafo', 'texto': buffer.toString().trim()});
-          buffer.clear();
-        }
-        bloques.add({'tipo': 'titulo', 'texto': linea});
-        continue;
-      }
-
-      if (buffer.isNotEmpty) {
-        final bufferStr = buffer.toString();
-        if (bufferStr.endsWith('-')) {
-          buffer.clear();
-          buffer.write(bufferStr.substring(0, bufferStr.length - 1) + linea);
-        } else {
-          buffer.write(' $linea');
-        }
-      } else {
-        buffer.write(linea);
-      }
-
-      if (linea.endsWith('.') || linea.endsWith('!') || linea.endsWith('?')) {
-        final siguiente = i < lineas.length - 1 ? lineas[i + 1] : '';
-        if (siguiente.isEmpty ||
-            (siguiente.isNotEmpty &&
-                siguiente[0] == siguiente[0].toUpperCase())) {
-          bloques.add({'tipo': 'parrafo', 'texto': buffer.toString().trim()});
-          buffer.clear();
-        }
-      }
-    }
-
-    if (buffer.isNotEmpty) {
-      bloques.add({'tipo': 'parrafo', 'texto': buffer.toString().trim()});
-    }
-
-    return bloques;
   }
 
   Widget _parrafoConSubrayado(
@@ -830,68 +969,12 @@ class _LectorScreenState extends State<LectorScreen>
     List<Subrayado> subrayados,
     Map<String, Color> tema,
   ) {
-    final spans = <TextSpan>[];
-    int posicion = 0;
+    final segmentos = _calcularSegmentos(parrafo, subrayados);
 
-    // Ordenar subrayados por posición en el parrafo
-    final subrayadosEnParrafo =
-        subrayados.where((s) => parrafo.contains(s.texto)).toList()..sort(
-          (a, b) =>
-              parrafo.indexOf(a.texto).compareTo(parrafo.indexOf(b.texto)),
-        );
-
-    for (final sub in subrayadosEnParrafo) {
-      final inicio = parrafo.indexOf(sub.texto, posicion);
-      if (inicio == -1) continue;
-      if (inicio > posicion) {
-        spans.add(
-          TextSpan(
-            text: parrafo.substring(posicion, inicio),
-            style: GoogleFonts.merriweather(
-              color: tema['texto'],
-              fontSize: _tamanoFuente,
-              height: _espaciado,
-            ),
-          ),
-        );
-      }
-
-      // Texto subrayado
-      final colorFondo =
-          _coloresSubrayado[sub.color] ?? const Color(0xFFFBBF24);
-      spans.add(
-        TextSpan(
-          text: sub.texto,
-          style: GoogleFonts.merriweather(
-            color: Colors.black,
-            fontSize: _tamanoFuente,
-            height: _espaciado,
-            fontWeight: FontWeight.w600,
-            backgroundColor: colorFondo.withOpacity(0.85),
-          ),
-        ),
-      );
-
-      posicion = inicio + sub.texto.length;
-    }
-
-    if (posicion < parrafo.length) {
-      spans.add(
-        TextSpan(
-          text: parrafo.substring(posicion),
-          style: GoogleFonts.merriweather(
-            color: tema['texto'],
-            fontSize: _tamanoFuente,
-            height: _espaciado,
-          ),
-        ),
-      );
-    }
-
-    if (spans.isEmpty) {
+    if (segmentos.isEmpty) {
       return SelectableText(
         parrafo,
-        textAlign: TextAlign.justify,
+        textAlign: _textAlign,
         style: GoogleFonts.merriweather(
           color: tema['texto'],
           fontSize: _tamanoFuente,
@@ -900,16 +983,51 @@ class _LectorScreenState extends State<LectorScreen>
       );
     }
 
+    final spans = <TextSpan>[];
+
+    for (final seg in segmentos) {
+      final texto = parrafo.substring(seg.inicio, seg.fin);
+      if (texto.isEmpty) continue;
+
+      if (seg.colores.isEmpty) {
+        spans.add(
+          TextSpan(
+            text: texto,
+            style: GoogleFonts.merriweather(
+              color: tema['texto'],
+              fontSize: _tamanoFuente,
+              height: _espaciado,
+            ),
+          ),
+        );
+      } else {
+        final colorFinal =
+            _coloresSubrayado[seg.colores.last] ?? AppTheme.amarilloSubrayado;
+        spans.add(
+          TextSpan(
+            text: texto,
+            style: GoogleFonts.merriweather(
+              color: Colors.black,
+              fontSize: _tamanoFuente,
+              height: _espaciado,
+              fontWeight: FontWeight.w600,
+              backgroundColor: colorFinal.withOpacity(1.0),
+            ),
+          ),
+        );
+      }
+    }
+
     return SelectableText.rich(
       TextSpan(children: spans),
-      textAlign: TextAlign.justify,
+      textAlign: _textAlign,
       onSelectionChanged: (selection, cause) {
         if (selection.baseOffset != selection.extentOffset) {
           final seleccionado = parrafo.substring(
             selection.baseOffset.clamp(0, parrafo.length),
             selection.extentOffset.clamp(0, parrafo.length),
           );
-          if (seleccionado.trim().length > 3) {
+          if (seleccionado.trim().length > 6) {
             _textoSeleccionado = seleccionado;
             _mostrarBotonSubrayar();
           }
@@ -918,8 +1036,45 @@ class _LectorScreenState extends State<LectorScreen>
     );
   }
 
+  List<_Segmento> _calcularSegmentos(
+    String parrafo,
+    List<Subrayado> subrayados,
+  ) {
+    final Set<int> puntos = {0, parrafo.length};
+    final List<({int inicio, int fin, String color})> rangos = [];
+
+    for (final sub in subrayados) {
+      int idx = parrafo.indexOf(sub.texto);
+      if (idx == -1) {
+        idx = parrafo.toLowerCase().indexOf(sub.texto.toLowerCase());
+      }
+      if (idx == -1) continue;
+
+      final fin = idx + sub.texto.length;
+      puntos.add(idx);
+      puntos.add(fin);
+      rangos.add((inicio: idx, fin: fin, color: sub.color));
+    }
+
+    final puntosOrdenados = puntos.toList()..sort();
+    final segmentos = <_Segmento>[];
+
+    for (int i = 0; i < puntosOrdenados.length - 1; i++) {
+      final inicio = puntosOrdenados[i];
+      final fin = puntosOrdenados[i + 1];
+
+      final colores = rangos
+          .where((r) => r.inicio <= inicio && r.fin >= fin)
+          .map((r) => r.color)
+          .toList();
+
+      segmentos.add(_Segmento(inicio: inicio, fin: fin, colores: colores));
+    }
+
+    return segmentos;
+  }
+
   Widget _panelSubrayados() {
-    // Agrupar subrayados por pagina
     final Map<int, List<Subrayado>> porPagina = {};
     for (final s in _subrayados) {
       porPagina.putIfAbsent(s.pagina, () => []).add(s);
@@ -988,12 +1143,8 @@ class _LectorScreenState extends State<LectorScreen>
                       : ListView.builder(
                           padding: const EdgeInsets.all(16),
                           itemCount: paginas.length,
-                          itemBuilder: (_, i) {
-                            final pagina = paginas[i];
-                            final items = porPagina[pagina]!;
-
-                            return _grupoPagina(pagina, items);
-                          },
+                          itemBuilder: (_, i) =>
+                              _grupoPagina(paginas[i], porPagina[paginas[i]]!),
                         ),
                 ),
               ],
@@ -1152,7 +1303,11 @@ class _LectorScreenState extends State<LectorScreen>
                     );
                     if (confirmar == true) {
                       await _storage.eliminarSubrayado(s.id);
-                      _cargarSubrayados();
+                      setState(() {
+                        _subrayados = _storage.obtenerSubrayados(
+                          widget.libro.id,
+                        );
+                      });
                     }
                   },
                   child: Container(

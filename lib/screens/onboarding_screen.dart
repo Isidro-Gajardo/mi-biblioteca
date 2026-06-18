@@ -74,7 +74,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // Botón saltar
             Align(
               alignment: Alignment.topRight,
               child: Padding(
@@ -93,8 +92,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     : const SizedBox(height: 40),
               ),
             ),
-
-            // Slides
             Expanded(
               child: PageView.builder(
                 controller: _controller,
@@ -103,8 +100,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 itemBuilder: (_, i) => _buildSlide(_slides[i]),
               ),
             ),
-
-            // Indicadores de página
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: List.generate(
@@ -123,10 +118,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 ),
               ),
             ),
-
             const SizedBox(height: 32),
-
-            // Botón siguiente / comenzar
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 32),
               child: SizedBox(
@@ -176,7 +168,6 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          // Ícono con fondo circular
           Container(
             width: 120,
             height: 120,

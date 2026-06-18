@@ -6,6 +6,15 @@ import '../models/libro.dart';
 import '../models/subrayado.dart';
 import '../services/pdf_service.dart';
 import 'package:uuid/uuid.dart';
+import 'package:flutter/foundation.dart';
+
+Future<List<String>> _extraerTextoIsolate(String ruta) async {
+  return await PdfService().extraerTextoCompleto(ruta);
+}
+
+Future<String?> _generarThumbnailIsolate(List<String> args) async {
+  return await PdfService().guardarThumbnail(args[0], args[1]);
+}
 
 class StorageService {
   static final StorageService _instance = StorageService._internal();
@@ -75,7 +84,7 @@ class StorageService {
     List<String> textoPaginas = [];
 
     if (tieneTexto) {
-      textoPaginas = await PdfService().extraerTextoCompleto(destino);
+      textoPaginas = await compute(_extraerTextoIsolate, destino);
     } else if (usarOCR) {
       final libroTemporal = Libro(
         id: id,
@@ -104,6 +113,8 @@ class StorageService {
     final bool tieneTextoFinal =
         tieneTexto || (usarOCR && textoPaginas.any((p) => p.trim().isNotEmpty));
 
+    final rutaThumbnail = await compute(_generarThumbnailIsolate,[destino, id],);
+
     final libro = Libro(
       id: id,
       titulo: titulo,
@@ -113,6 +124,7 @@ class StorageService {
       tieneTexto: tieneTextoFinal,
       procesandoOCR: false,
       textoPaginas: textoPaginas,
+      rutaThumbnail: rutaThumbnail,
     );
 
     await _librosBox.put(id, libro);
@@ -152,6 +164,7 @@ class StorageService {
       try {
         await File(libro.rutaArchivo).delete();
       } catch (_) {}
+      await PdfService().eliminarThumbnail(id);
       await libro.delete();
       final subrayados = _subrayadosBox.values
           .where((s) => s.libroId == id)

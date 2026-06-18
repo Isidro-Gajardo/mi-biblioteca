@@ -21,13 +21,14 @@ class LibroAdapter extends TypeAdapter<Libro> {
       tieneTexto: fields[7] as bool,
       textoPaginas: (fields[8] as List).cast<String>(),
       procesandoOCR: fields[9] as bool,
+      rutaThumbnail: fields[10] as String?,
     );
   }
 
   @override
   void write(BinaryWriter writer, Libro obj) {
     writer
-      ..writeByte(10)
+      ..writeByte(11)
       ..writeByte(0)
       ..write(obj.id)
       ..writeByte(1)
@@ -47,7 +48,9 @@ class LibroAdapter extends TypeAdapter<Libro> {
       ..writeByte(8)
       ..write(obj.textoPaginas)
       ..writeByte(9)
-      ..write(obj.procesandoOCR);
+      ..write(obj.procesandoOCR)
+      ..writeByte(10)
+      ..write(obj.rutaThumbnail);
   }
 
   @override

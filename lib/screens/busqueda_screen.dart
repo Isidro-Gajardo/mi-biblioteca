@@ -50,7 +50,6 @@ class _BusquedaScreenState extends State<BusquedaScreen> {
     final queryLower = query.trim().toLowerCase();
     final resultados = <ResultadoBusqueda>[];
 
-    // Primero es buscar frase exacta
     for (int i = 0; i < widget.libro.textoPaginas.length; i++) {
       final textoPagina = widget.libro.textoPaginas[i];
       final textoLower = textoPagina.toLowerCase();
@@ -86,7 +85,6 @@ class _BusquedaScreenState extends State<BusquedaScreen> {
       }
     }
 
-    // Si no hay resultados exactos, buscar por palabras clave
     if (resultados.isEmpty) {
       final palabras = queryLower
           .split(' ')
@@ -115,7 +113,7 @@ class _BusquedaScreenState extends State<BusquedaScreen> {
 
             final prefijo = inicio > 0 ? '...' : '';
             final sufijo = fin < textoPagina.length ? '...' : '';
-            
+
             final yaExiste = resultados.any(
               (r) =>
                   r.pagina == i + 1 &&

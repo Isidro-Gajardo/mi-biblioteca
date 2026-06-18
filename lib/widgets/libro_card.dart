@@ -3,7 +3,8 @@ import 'package:google_fonts/google_fonts.dart';
 import '../models/libro.dart';
 import '../services/pdf_service.dart';
 import '../theme/app_theme.dart';
-import 'package:pdfx/pdfx.dart';
+import 'dart:io';
+import 'dart:typed_data';
 
 class LibroCard extends StatefulWidget {
   final Libro libro;
@@ -26,7 +27,7 @@ class LibroCard extends StatefulWidget {
 }
 
 class _LibroCardState extends State<LibroCard> {
-  PdfPageImage? _thumbnail;
+  Uint8List? _thumbnailBytes;
   bool _cargando = true;
 
   @override
@@ -36,16 +37,35 @@ class _LibroCardState extends State<LibroCard> {
   }
 
   Future<void> _cargarThumbnail() async {
-    final imagen = await PdfService().renderizarPagina(
+    if (widget.libro.rutaThumbnail != null) {
+      final archivo = File(widget.libro.rutaThumbnail!);
+      if (await archivo.exists()) {
+        final bytes = await archivo.readAsBytes();
+        if (mounted) {
+          setState(() {
+            _thumbnailBytes = bytes;
+            _cargando = false;
+          });
+        }
+        return;
+      }
+    }
+
+    final rutaThumbnail = await PdfService().guardarThumbnail(
       widget.libro.rutaArchivo,
-      1,
-      escala: 0.5,
+      widget.libro.id,
     );
-    if (mounted) {
+
+    if (rutaThumbnail != null && mounted) {
+      final bytes = await File(rutaThumbnail).readAsBytes();
       setState(() {
-        _thumbnail = imagen;
+        _thumbnailBytes = bytes;
         _cargando = false;
       });
+      widget.libro.rutaThumbnail = rutaThumbnail;
+      await widget.libro.save();
+    } else if (mounted) {
+      setState(() => _cargando = false);
     }
   }
 
@@ -98,8 +118,6 @@ class _LibroCardState extends State<LibroCard> {
                 widget.onEditar();
               },
             ),
-            // Botón OCR — solo si no tiene texto
-            // Botón OCR
             if (!widget.libro.tieneTexto)
               widget.libro.procesandoOCR
                   ? ListTile(
@@ -195,8 +213,8 @@ class _LibroCardState extends State<LibroCard> {
                         ? const Center(
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
-                        : _thumbnail != null
-                        ? Image.memory(_thumbnail!.bytes, fit: BoxFit.cover)
+                        : _thumbnailBytes != null
+                        ? Image.memory(_thumbnailBytes!, fit: BoxFit.cover)
                         : const Center(
                             child: Icon(
                               Icons.picture_as_pdf,
@@ -206,7 +224,7 @@ class _LibroCardState extends State<LibroCard> {
                           ),
                   ),
                 ),
-                // 3 puntos arriba a la derecha
+
                 Positioned(
                   top: 6,
                   right: 6,
@@ -226,7 +244,6 @@ class _LibroCardState extends State<LibroCard> {
                     ),
                   ),
                 ),
-                // Progreso de lectura
                 if (widget.libro.ultimaPagina > 0)
                   Positioned(
                     bottom: 0,
@@ -252,10 +269,7 @@ class _LibroCardState extends State<LibroCard> {
               ],
             ),
           ),
-
           const SizedBox(height: 8),
-
-          // Solo título y páginas — sin botón abajo
           Text(
             widget.libro.titulo,
             style: GoogleFonts.inter(

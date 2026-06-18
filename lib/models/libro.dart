@@ -34,6 +34,9 @@ class Libro extends HiveObject {
   @HiveField(9)
   bool procesandoOCR;
 
+  @HiveField(10)
+  String? rutaThumbnail;
+
   Libro({
     required this.id,
     required this.titulo,
@@ -45,5 +48,6 @@ class Libro extends HiveObject {
     this.tieneTexto = false,
     this.textoPaginas = const [],
     this.procesandoOCR = false,
+    this.rutaThumbnail,
   });
 }
