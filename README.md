@@ -1,4 +1,4 @@
-# Mi Biblioteca 📚
+# Mi Biblioteca
 
 Aplicación Android de lectura de PDFs publicada en Google Play. Diseñada para transformar documentos PDF en una experiencia de lectura, con funcionalidades inteligentes para estudiar y organizar tu contenido.
 
